@@ -1,0 +1,94 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PneumoScan Admin</title><link rel="stylesheet" href="/static/style.css"></head><body class="admin">
+<div class="auth hidden" id="loginBox"><div class="card">
+  <div class="logo"><i>A</i>PneumoScan Admin</div><p class="muted">Administrator sign in</p>
+  <label for="email">Email</label><input id="email" type="email" autocomplete="username">
+  <label for="pw">Password</label><input id="pw" type="password" autocomplete="current-password">
+  <div class="err" id="err" role="alert"></div><button class="btn" id="go" style="width:100%">Sign in</button>
+  <p class="small muted" style="margin-bottom:0"><a href="/">Back to the user portal</a></p></div></div>
+
+<div class="layout hidden" id="panel">
+<aside class="sidebar" id="sidebar" aria-label="Admin navigation">
+  <div class="logo"><i>A</i>Admin</div>
+  <nav class="nav" id="nav"><button data-v="overview">Overview</button><button data-v="users">Users</button>
+    <button data-v="analyses">Analyses</button><button data-v="model">Model</button></nav>
+  <button class="btn ghost" id="logout">Log out</button></aside>
+<main>
+  <div class="topbar"><button class="icon-btn" id="menuBtn">Menu</button><h1 id="title"></h1><span class="muted small" id="who"></span></div>
+  <section id="v-overview" class="view"><div class="grid g4" id="stats"></div>
+    <div class="grid g2" style="margin-top:1rem"><div class="card"><h2>Analyses, last 14 days</h2><div class="chart" id="daily" style="margin-top:1.6rem"></div></div>
+    <div class="card"><h2>Results by class</h2><div id="byLabel" style="margin-top:.8rem"></div></div></div></section>
+  <section id="v-users" class="view hidden"><div class="card"><div class="scroll"><table id="users"></table></div></div></section>
+  <section id="v-analyses" class="view hidden"><div class="card">
+    <p class="small muted" style="margin-top:0">Metadata only. Admins cannot view patient images.</p>
+    <input type="search" id="search" placeholder="Search by user, file or result" aria-label="Search analyses">
+    <div class="scroll"><table id="ana"></table></div></div></section>
+  <section id="v-model" class="view hidden"><div class="card" id="modelBox"></div></section>
+</main></div>
+<script src="/static/common.js"></script>
+<script>
+const titles={overview:'Overview',users:'Users',analyses:'Analyses',model:'Model'};
+let me;
+if(!localStorage.getItem(KEY)) $('#loginBox').classList.remove('hidden');
+else init();
+async function login(){
+  $('#err').textContent='';
+  try{const r=await api('/admin/login',{method:'POST',json:{email:$('#email').value,password:$('#pw').value},noRedirect:true});
+    localStorage.setItem(KEY,r.token);location.reload()}catch(e){$('#err').textContent=e.message}}
+$('#go').onclick=login;document.addEventListener('keydown',e=>{if(e.key==='Enter'&&!$('#loginBox').classList.contains('hidden'))login()});
+async function init(){
+  me=await api('/me');
+  if(me.role!=='admin'){localStorage.removeItem(KEY);location.href='/admin';return}
+  $('#panel').classList.remove('hidden');$('#who').textContent=me.email;bindMenu();
+  $$('#nav button').forEach(b=>b.onclick=()=>show(b.dataset.v));
+  $('#logout').onclick=async()=>{try{await api('/auth/logout',{method:'POST'})}catch{}localStorage.removeItem(KEY);location.href='/admin'};
+  const h=location.hash.slice(1);show(titles[h]?h:'overview');
+}
+function show(v){
+  $$('.view').forEach(s=>s.classList.toggle('hidden',s.id!=='v-'+v));
+  $$('#nav button').forEach(b=>{if(b.dataset.v===v)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current')});
+  $('#title').textContent=titles[v];history.replaceState(null,'','#'+v);
+  ({overview:loadOverview,users:loadUsers,analyses:loadAna,model:loadModel})[v]();
+}
+async function loadOverview(){
+  const s=await api('/admin/stats');
+  $('#stats').innerHTML=[['Registered users',s.users],['Active users',s.active_users],['Analyses',s.analyses],['Video analyses',s.videos],
+    ['Needs review',s.needs_review],['Rejected uploads',s.rejected],['Image storage (MB)',s.storage_mb]].map(([l,n])=>`<div class="card stat"><b>${n}</b><span class="muted">${l}</span></div>`).join('');
+  const max=Math.max(1,...s.daily.map(d=>d.count));
+  $('#daily').innerHTML=s.daily.map(d=>`<div style="height:${d.count/max*100}%" title="${d.date}: ${d.count}"><span>${d.count||''}</span></div>`).join('');
+  const tot=Object.values(s.by_label).reduce((a,b)=>a+b,0)||1;
+  $('#byLabel').innerHTML=Object.entries(s.by_label).map(([k,n])=>`<div class="small row sp"><span>${esc(nice(k))}</span><span>${n}</span></div><div class="bar"><i style="width:${n/tot*100}%"></i></div>`).join('')||'<p class="muted">No analyses yet.</p>';
+}
+async function loadUsers(){
+  const u=await api('/admin/users');
+  $('#users').innerHTML='<tr><th>Name</th><th>Email</th><th>Role</th><th>Analyses</th><th>Joined</th><th>Status</th><th></th></tr>'+u.map(x=>`<tr>
+    <td>${esc(x.name)}</td><td>${esc(x.email)}</td><td>${esc(x.role)}</td><td>${x.n}</td><td>${fmtDate(x.created)}</td>
+    <td><span class="pill ${x.active?'good':'bad'}">${x.active?'Active':'Deactivated'}</span></td>
+    <td style="white-space:nowrap">${x.id===me.id?'<span class="muted small">You</span>':
+     `<button class="btn ghost sm" data-act="${x.id}" data-to="${x.active?0:1}">${x.active?'Deactivate':'Activate'}</button>
+      <button class="btn ghost sm" data-role="${x.id}" data-to="${x.role==='admin'?'user':'admin'}">Make ${x.role==='admin'?'user':'admin'}</button>
+      <button class="btn danger sm" data-del="${x.id}">Delete</button>`}</td></tr>`).join('');
+  $$('[data-act]').forEach(b=>b.onclick=async()=>{await api('/admin/users/'+b.dataset.act,{method:'PATCH',json:{active:b.dataset.to==='1'}});toast('User updated');loadUsers()});
+  $$('[data-role]').forEach(b=>b.onclick=async()=>{if(!confirm('Change this user\'s role to '+b.dataset.to+'?'))return;
+    await api('/admin/users/'+b.dataset.role,{method:'PATCH',json:{role:b.dataset.to}});toast('Role updated');loadUsers()});
+  $$('[data-del]').forEach(b=>b.onclick=async()=>{if(!confirm('Permanently delete this user and all their records?'))return;
+    await api('/admin/users/'+b.dataset.del,{method:'DELETE'});toast('User deleted');loadUsers()});
+}
+async function loadAna(){
+  const l=await api('/admin/analyses?search='+encodeURIComponent($('#search').value));
+  $('#ana').innerHTML=l.length?'<tr><th>Date</th><th>User</th><th>File</th><th>Type</th><th>Result</th><th>Confidence</th><th>Model</th><th></th></tr>'+l.map(a=>{const v=verdict(a);
+    return `<tr><td>${fmtDate(a.created)}</td><td>${esc(a.email)}</td><td>${esc(a.filename)}</td><td>${esc(a.kind)}</td><td><span class="pill ${v.cls}">${esc(v.text)}</span></td>
+    <td>${a.status==='rejected'?'-':pct(a.confidence)}</td><td class="small">${esc(a.model_version)}</td><td><button class="btn danger sm" data-del="${a.id}">Delete</button></td></tr>`}).join(''):'<tr><td class="muted">No analyses found.</td></tr>';
+  $$('#ana [data-del]').forEach(b=>b.onclick=async()=>{if(!confirm('Delete this record?'))return;await api('/admin/analyses/'+b.dataset.del,{method:'DELETE'});toast('Record deleted');loadAna()});
+}
+let st;$('#search').oninput=()=>{clearTimeout(st);st=setTimeout(loadAna,250)};
+async function loadModel(){
+  const m=(await api('/admin/stats')).model,t=m.metrics?.test;
+  $('#modelBox').innerHTML=`${m.demo?'<div class="banner">Demo mode: models/model.pt not found. Users are seeing placeholder results.</div>':''}
+  <h2>${esc(m.version)}</h2><p class="muted">Classes: ${m.classes.map(c=>esc(nice(c))).join(', ')} · review threshold ${(m.review_threshold*100)|0}% · temperature ${m.temperature.toFixed(2)}</p>
+  ${t?`<p>Test accuracy ${pct(t.accuracy)} on ${t.n} images.</p><div class="scroll"><table><tr><th>Class</th><th>Sensitivity</th><th>Specificity</th><th>Precision</th><th>F1</th><th>Support</th></tr>
+  ${Object.entries(t.per_class).map(([c,v])=>`<tr><td>${esc(nice(c))}</td><td>${pct(v.sensitivity)}</td><td>${pct(v.specificity)}</td><td>${pct(v.precision)}</td><td>${pct(v.f1)}</td><td>${v.support}</td></tr>`).join('')}</table></div>
+  <h3 style="margin-top:1rem">Confusion matrix (rows = true, columns = predicted)</h3><div class="scroll"><table><tr><th></th>${m.classes.map(c=>`<th>${esc(nice(c))}</th>`).join('')}</tr>
+  ${t.confusion_matrix.map((r,i)=>`<tr><th>${esc(nice(m.classes[i]))}</th>${r.map(n=>`<td>${n}</td>`).join('')}</tr>`).join('')}</table></div>`:'<p class="muted">No stored evaluation metrics.</p>'}`;
+}
+</script></body></html>

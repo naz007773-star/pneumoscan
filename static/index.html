@@ -1,0 +1,38 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PneumoScan: sign in</title><link rel="stylesheet" href="/static/style.css"></head><body>
+<div class="auth"><div class="card">
+  <div class="logo"><i>P</i>PneumoScan</div>
+  <p class="muted">Chest X-ray analysis for learning and research.</p>
+  <div class="tabs" role="tablist">
+    <button role="tab" id="tLogin" aria-selected="true">Sign in</button>
+    <button role="tab" id="tReg" aria-selected="false">Create account</button></div>
+  <div id="nameWrap" class="hidden"><label for="name">Full name</label><input id="name" type="text" autocomplete="name"></div>
+  <label for="email">Email</label><input id="email" type="email" autocomplete="email">
+  <label for="pw">Password</label>
+  <div class="pw"><input id="pw" type="password" autocomplete="current-password"><button type="button" id="show">Show</button></div>
+  <p class="small muted hidden" id="hint">At least 8 characters, with letters and numbers.</p>
+  <div class="err" id="err" role="alert"></div>
+  <button class="btn" id="go" style="width:100%">Sign in</button>
+  <p class="small muted" style="margin-bottom:0">Administrator? <a href="/admin">Use the admin portal</a></p>
+</div></div>
+<script src="/static/common.js"></script>
+<script>
+let mode='login';
+if(localStorage.getItem(KEY)) location.href='/app';
+function setMode(m){mode=m;$('#tLogin').setAttribute('aria-selected',m==='login');$('#tReg').setAttribute('aria-selected',m==='reg');
+ $('#nameWrap').classList.toggle('hidden',m==='login');$('#hint').classList.toggle('hidden',m==='login');
+ $('#go').textContent=m==='login'?'Sign in':'Create account';$('#err').textContent='';}
+$('#tLogin').onclick=()=>setMode('login');$('#tReg').onclick=()=>setMode('reg');
+$('#show').onclick=()=>{const p=$('#pw');p.type=p.type==='password'?'text':'password';$('#show').textContent=p.type==='password'?'Show':'Hide'};
+async function submit(){
+  $('#err').textContent='';$('#go').disabled=true;
+  try{
+    const json={email:$('#email').value,password:$('#pw').value};
+    if(mode==='reg') json.name=$('#name').value;
+    const r=await api(mode==='login'?'/auth/login':'/auth/register',{method:'POST',json,noRedirect:true});
+    localStorage.setItem(KEY,r.token);location.href='/app';
+  }catch(e){$('#err').textContent=e.message}finally{$('#go').disabled=false}
+}
+$('#go').onclick=submit;
+document.addEventListener('keydown',e=>{if(e.key==='Enter')submit()});
+</script></body></html>

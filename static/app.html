@@ -1,0 +1,131 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PneumoScan</title><link rel="stylesheet" href="/static/style.css"></head><body>
+<div class="layout">
+<aside class="sidebar" id="sidebar" aria-label="Main navigation">
+  <div class="logo"><i>P</i>PneumoScan</div>
+  <nav class="nav" id="nav">
+    <button data-v="dashboard">Dashboard</button><button data-v="image">New analysis</button>
+    <button data-v="video">Video analysis</button><button data-v="history">History</button>
+    <button data-v="model">Model information</button><button data-v="profile">Profile</button>
+  </nav>
+  <button class="btn ghost" id="logout">Log out</button>
+</aside>
+<main>
+  <div class="topbar"><button class="icon-btn" id="menuBtn" aria-label="Open menu">Menu</button><h1 id="title"></h1><span class="muted small" id="who"></span></div>
+
+  <section id="v-dashboard" class="view">
+    <div class="grid g4" id="stats"></div>
+    <div class="card" style="margin-top:1rem"><div class="row sp"><h2>Recent analyses</h2><button class="btn sm" data-go="image">New analysis</button></div>
+      <div class="scroll"><table id="recent"></table></div></div>
+  </section>
+
+  <section id="v-image" class="view hidden"><div class="card">
+    <div class="drop" id="imgDrop" tabindex="0" role="button" aria-label="Choose a chest X-ray image">
+      <strong>Drop a chest X-ray here, or click to choose</strong><div class="small muted">JPG, PNG, BMP or WEBP, up to 10 MB</div><div id="imgPrev"></div></div>
+    <input type="file" id="imgFile" accept=".jpg,.jpeg,.png,.bmp,.webp" class="hidden">
+    <label class="row small" style="font-weight:400"><input type="checkbox" id="imgSave" checked> Keep a copy in my history (uncheck to discard the image after analysis)</label>
+    <button class="btn" id="imgGo" disabled>Analyse image</button>
+  </div><div class="card hidden" id="imgRes" style="margin-top:1rem"></div></section>
+
+  <section id="v-video" class="view hidden"><div class="card">
+    <p class="muted small" style="margin-top:0">Frames are sampled about once per second. Only frames that look like chest radiographs are analysed. This is a demonstration; video classification is not validated.</p>
+    <div class="drop" id="vidDrop" tabindex="0" role="button" aria-label="Choose a video">
+      <strong>Drop a video here, or click to choose</strong><div class="small muted">MP4, AVI, MOV, MKV or WEBM, up to 60 MB</div><div id="vidPrev"></div></div>
+    <input type="file" id="vidFile" accept=".mp4,.avi,.mov,.mkv,.webm" class="hidden">
+    <label class="row small" style="font-weight:400"><input type="checkbox" id="vidSave" checked> Keep a preview frame in my history</label>
+    <button class="btn" id="vidGo" disabled>Analyse video</button>
+  </div><div class="card hidden" id="vidRes" style="margin-top:1rem"></div></section>
+
+  <section id="v-history" class="view hidden"><div class="card">
+    <input type="search" id="search" placeholder="Search by file name or result" aria-label="Search history">
+    <div class="scroll"><table id="hist"></table></div></div>
+    <div class="card hidden" id="detail" style="margin-top:1rem"></div></section>
+
+  <section id="v-model" class="view hidden"><div class="card" id="modelBox"></div></section>
+
+  <section id="v-profile" class="view hidden"><div class="card" style="max-width:480px">
+    <label for="pName">Name</label><input type="text" id="pName">
+    <label for="pCur">Current password (only to change it)</label><input type="password" id="pCur" autocomplete="current-password">
+    <label for="pNew">New password</label><input type="password" id="pNew" autocomplete="new-password">
+    <p style="margin-bottom:0"><button class="btn" id="pSave">Save changes</button></p></div></section>
+</main></div>
+<script src="/static/common.js"></script>
+<script>
+if(!localStorage.getItem(KEY)) location.href='/';
+const titles={dashboard:'Dashboard',image:'New analysis',video:'Video analysis',history:'History',model:'Model information',profile:'Profile'};
+let me;
+function show(v){
+  $$('.view').forEach(s=>s.classList.toggle('hidden',s.id!=='v-'+v));
+  $$('#nav button').forEach(b=>{if(b.dataset.v===v)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current')});
+  $('#title').textContent=titles[v];history.replaceState(null,'','#'+v);
+  ({dashboard:loadDash,history:loadHist,model:loadModel,profile:()=>{$('#pName').value=me.name}})[v]?.();
+}
+$$('#nav button').forEach(b=>b.onclick=()=>show(b.dataset.v));
+$$('[data-go]').forEach(b=>b.onclick=()=>show(b.dataset.go));
+$('#logout').onclick=async()=>{try{await api('/auth/logout',{method:'POST'})}catch{}localStorage.removeItem(KEY);location.href='/'};
+
+function histRows(list,withView=true){
+  if(!list.length) return '<tr><td class="muted">Nothing here yet. Run your first analysis.</td></tr>';
+  return '<tr><th>Date</th><th>File</th><th>Type</th><th>Result</th><th>Confidence</th><th>Model</th><th></th></tr>'+list.map(a=>{
+    const v=verdict(a);
+    return `<tr><td>${fmtDate(a.created)}</td><td>${esc(a.filename)}</td><td>${esc(a.kind)}</td><td><span class="pill ${v.cls}">${esc(v.text)}</span></td>
+    <td>${a.status==='rejected'?'-':pct(a.confidence)}</td><td class="small">${esc(a.model_version)}</td>
+    <td style="white-space:nowrap"><button class="btn ghost sm" data-view="${a.id}">View</button> <button class="btn danger sm" data-del="${a.id}">Delete</button></td></tr>`}).join('');
+}
+function wireRows(root,reload){
+  $$('[data-view]',root).forEach(b=>b.onclick=()=>openDetail(b.dataset.view));
+  $$('[data-del]',root).forEach(b=>b.onclick=async()=>{
+    if(!confirm('Delete this record and its stored image?'))return;
+    await api('/analyses/'+b.dataset.del,{method:'DELETE'});toast('Record deleted');reload();$('#detail').classList.add('hidden')});
+}
+async function openDetail(id){
+  show('history');const a=await api('/analyses/'+id);
+  const src=a.has_file?await blobUrl(`/analyses/${id}/file`):null;
+  const d=$('#detail');d.classList.remove('hidden');d.innerHTML=renderResult(a,src);d.scrollIntoView({behavior:'smooth'});
+}
+async function loadDash(){
+  const [s,list]=await Promise.all([api('/stats'),api('/analyses')]);
+  const bl=s.by_label,normal=bl.NORMAL||0,other=Object.entries(bl).filter(([k])=>k!=='NORMAL').reduce((n,[,v])=>n+v,0);
+  $('#stats').innerHTML=[['Total analyses',s.total],['Normal',normal],['Pneumonia-type',other],['Needs review',s.needs_review]]
+    .map(([l,n])=>`<div class="card stat"><b>${n}</b><span class="muted">${l}</span></div>`).join('');
+  $('#recent').innerHTML=histRows(list.slice(0,5));wireRows($('#recent'),loadDash);
+}
+async function loadHist(){const l=await api('/analyses?search='+encodeURIComponent($('#search').value));$('#hist').innerHTML=histRows(l);wireRows($('#hist'),loadHist)}
+let st;$('#search').oninput=()=>{clearTimeout(st);st=setTimeout(loadHist,250)};
+async function loadModel(){
+  const m=await api('/model'),t=m.metrics?.test;
+  $('#modelBox').innerHTML=`${m.demo?'<div class="banner">Demo mode: no trained model found. Train one with train.py (see README).</div>':''}
+   <h2>${esc(m.version)}</h2><p class="muted">Classes: ${m.classes.map(c=>esc(nice(c))).join(', ')}. Results below ${(m.review_threshold*100)|0}% confidence are marked "Needs review". Confidence is calibrated with temperature scaling (T = ${m.temperature.toFixed(2)}).</p>
+   ${t?`<h3>Held-out test performance (${t.n} images)</h3><p>Accuracy ${pct(t.accuracy)}</p><div class="scroll"><table><tr><th>Class</th><th>Sensitivity</th><th>Specificity</th><th>Precision</th><th>F1</th><th>Support</th></tr>
+   ${Object.entries(t.per_class).map(([c,v])=>`<tr><td>${esc(nice(c))}</td><td>${pct(v.sensitivity)}</td><td>${pct(v.specificity)}</td><td>${pct(v.precision)}</td><td>${pct(v.f1)}</td><td>${v.support}</td></tr>`).join('')}</table></div>`:'<p class="muted">No evaluation metrics are stored with this model.</p>'}
+   <h3 style="margin-top:1rem">Limitations</h3><ul class="small"><li>Trained on public paediatric (ages 1-5) radiographs from one hospital; results on adults or other equipment are unknown.</li>
+   <li>The "looks like an X-ray" check is a simple image-statistics filter, not a validated detector.</li><li>Viral vs bacterial appearance can overlap on X-ray alone.</li></ul>
+   <div class="disclaimer">${esc(m.disclaimer)}</div>`;
+}
+$('#pSave').onclick=async()=>{
+  try{me=await api('/me',{method:'PUT',json:{name:$('#pName').value,current_password:$('#pCur').value||null,new_password:$('#pNew').value||null}});
+    $('#who').textContent=me.name;$('#pCur').value=$('#pNew').value='';toast('Changes saved')}catch(e){toast(e.message,true)}};
+
+function uploader(p){ // p: drop,file,prev,go,res,save,endpoint,video
+  let f=null;const drop=$(p.drop),inp=$(p.file);
+  const pick=file=>{if(!file)return;f=file;const u=URL.createObjectURL(file);
+    $(p.prev).innerHTML=`<div class="small">${esc(file.name)}</div>`+(p.video?`<video src="${u}" controls></video>`:`<img src="${u}" alt="Preview">`);$(p.go).disabled=false};
+  drop.onclick=()=>inp.click();drop.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();inp.click()}};
+  inp.onchange=()=>pick(inp.files[0]);
+  drop.ondragover=e=>{e.preventDefault();drop.classList.add('over')};drop.ondragleave=()=>drop.classList.remove('over');
+  drop.ondrop=e=>{e.preventDefault();drop.classList.remove('over');pick(e.dataTransfer.files[0])};
+  $(p.go).onclick=async()=>{
+    const fd=new FormData();fd.append('file',f);fd.append('save_file',$(p.save).checked);
+    const b=$(p.go);b.disabled=true;b.textContent='Analysing...';
+    try{const a=await api(p.endpoint,{method:'POST',form:fd});
+      const src=a.has_file?await blobUrl(`/analyses/${a.id}/file`):(p.video?null:URL.createObjectURL(f));
+      const r=$(p.res);r.classList.remove('hidden');r.innerHTML=renderResult(a,src);r.scrollIntoView({behavior:'smooth'})}
+    catch(e){toast(e.message,true)}finally{b.disabled=false;b.textContent=p.video?'Analyse video':'Analyse image'}};
+}
+uploader({drop:'#imgDrop',file:'#imgFile',prev:'#imgPrev',go:'#imgGo',res:'#imgRes',save:'#imgSave',endpoint:'/analyze/image'});
+uploader({drop:'#vidDrop',file:'#vidFile',prev:'#vidPrev',go:'#vidGo',res:'#vidRes',save:'#vidSave',endpoint:'/analyze/video',video:true});
+bindMenu();
+(async()=>{me=await api('/me');$('#who').textContent=me.name;
+  if(me.role==='admin'){localStorage.removeItem(KEY);location.href='/admin';return}
+  const h=location.hash.slice(1);show(titles[h]?h:'dashboard')})();
+</script></body></html>
